@@ -1,0 +1,205 @@
+# Токен бота, который выдаёт @BotFather в Telegram
+TELEGRAM_BOT_TOKEN=
+
+# Ключ API Anthropic (Claude) — получить на https://console.anthropic.com/
+ANTHROPIC_API_KEY=
+
+# Ваш Telegram user id — чтобы бот отвечал только вам (узнать у @userinfobot)
+ALLOWED_USER_ID=
+
+# Часовой пояс для напоминаний, например Europe/Moscow
+TIMEZONE=Europe/Moscow
+
+# Модель Claude: claude-sonnet-5 — хороший баланс скорости и качества,
+# claude-haiku-4-5-20251001 — быстрее и дешевле для простых диалогов
+CLAUDE_MODEL=claude-sonnet-5
+
+# Голос для озвучки ответов (edge-tts). Женский спокойный голос по умолчанию.
+# Другие варианты: ru-RU-DmitryNeural (мужской)
+TTS_VOICE=ru-RU-SvetlanaNeural
+
+# Ключ API OpenAI — нужен только для распознавания ГОЛОСОВЫХ сообщений (Whisper).
+# Оставьте пустым, если голосовой ввод не нужен — бот попросит писать текстом.
+# Получить: https://platform.openai.com/api-keys
+OPENAI_API_KEY=
+
+# Модель распознавания речи и язык (ISO-639-1). whisper-1 — самый стабильный
+# и дешёвый вариант, хорошо понимает русский.
+STT_MODEL=whisper-1
+STT_LANGUAGE=ru
+
+FROM python:3.11-slim
+
+# ffmpeg нужен pydub/edge-tts для конвертации речи в ogg/opus
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Здесь же будет жить assistant.sqlite3 — на Railway/Render подключите volume
+# на /app, чтобы напоминания переживали передеплой (см. README).
+CMD ["python", "-m", "bot.main"]
+
+# Альтернатива Dockerfile для Railway, если вы предпочитаете сборку через Nixpacks
+# вместо Docker: Railway подхватит этот файл автоматически и поставит ffmpeg.
+[phases.setup]
+aptPkgs = ["ffmpeg"]
+
+[start]
+cmd = "python -m bot.main"
+
+# Личный голосовой ассистент (Telegram-бот на Claude)
+
+Пишете боту текстом или голосовым сообщением — он отвечает текстом и голосом.
+Можно попросить напомнить о чём-то («напомни через час выйти из дома», «напомни
+завтра в 9 позвонить маме») — бот поставит напоминание и пришлёт его точно в срок,
+даже если между постановкой и сроком бот перезапускался.
+
+Что внутри:
+- диалог ведёт Claude (Anthropic API);
+- голосовые сообщения на вход распознаются через OpenAI Whisper (нужен отдельный
+  ключ — см. ниже, шаг 3; без него бот просто попросит написать текстом);
+- голосовые ответы — через edge-tts (бесплатно, без API-ключа, хорошие русские голоса);
+- напоминания хранятся в SQLite и переживают перезапуск бота;
+- доступ можно ограничить одним Telegram-аккаунтом (вашим).
+
+## 1. Что нужно получить перед запуском
+
+1. **Токен Telegram-бота.** В Telegram напишите @BotFather → `/newbot` → следуйте
+   инструкциям → скопируйте токен вида `123456:ABC-DEF...`.
+2. **Ключ Anthropic API.** Зарегистрируйтесь на https://console.anthropic.com/,
+   создайте API-ключ в разделе API Keys. Диалог с Claude — платный (по токенам);
+   для личного ассистента расходы обычно небольшие, но стоит проверить актуальные
+   цены на https://docs.claude.com.
+3. **Ключ OpenAI API — только если нужен голосовой ввод.** Зарегистрируйтесь на
+   https://platform.openai.com/, создайте ключ на странице API Keys. Распознавание
+   голоса (Whisper) стоит отдельно от Claude — ориентировочно $0.006 за минуту
+   аудио, то есть копейки для личного использования. Если оставить
+   `OPENAI_API_KEY` пустым, бот продолжит работать, просто попросит присылать
+   текст вместо голосовых.
+4. **Ваш Telegram user id** (чтобы бот отвечал только вам, а не всем подряд).
+   Узнать можно у бота @userinfobot — напишите ему `/start`, он пришлёт ваш id.
+
+Впишите всё это в `.env` (скопируйте `.env.example` → `.env` и заполните).
+
+## 2. Запуск локально (для проверки)
+
+Нужен Python 3.11+ и установленный `ffmpeg` (для конвертации голоса):
+
+```bash
+# Debian/Ubuntu:
+sudo apt-get install ffmpeg
+# macOS:
+brew install ffmpeg
+
+cp .env.example .env   # и заполните значения
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python -m bot.main
+```
+
+Бот запустится и будет опрашивать Telegram (polling) — пока процесс работает,
+можно писать ему в Telegram. Как только закроете терминал — бот перестанет отвечать,
+поэтому для постоянной работы нужен хостинг (см. ниже).
+
+## 3. Постоянная работа 24/7 — рекомендация
+
+Проще всего — **Railway** (railway.app): бесплатного тарифа обычно хватает для
+личного бота с небольшой нагрузкой, деплой за пару минут, есть постоянное
+хранилище (volume) для базы напоминаний. Альтернатива с похожим процессом — Render
+(render.com, план Background Worker).
+
+### Деплой на Railway
+
+1. Залейте эту папку в свой репозиторий на GitHub (Railway разворачивает из git).
+2. На railway.app → New Project → Deploy from GitHub repo → выберите репозиторий.
+   Railway увидит `Dockerfile` и соберёт образ автоматически (ffmpeg уже внутри).
+3. В настройках проекта → Variables добавьте те же переменные, что в `.env`:
+   `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `ALLOWED_USER_ID`, `TIMEZONE`,
+   `CLAUDE_MODEL`, `TTS_VOICE`, а также `OPENAI_API_KEY`, `STT_MODEL`, `STT_LANGUAGE`,
+   если нужен голосовой ввод.
+4. Важно: подключите **Volume** (Railway → Settings → Volumes) и примонтируйте его,
+   например, на `/app/data`, затем добавьте переменную `DB_PATH=/app/data/assistant.sqlite3`.
+   Без volume база с напоминаниями будет теряться при каждом передеплое.
+5. Deploy. В логах должна появиться строка «Бот запущен...» — после этого пишите
+   боту в Telegram.
+
+Если предпочитаете Nixpacks вместо Docker — в проекте уже есть `nixpacks.toml`
+с нужным пакетом `ffmpeg`, Railway подхватит его сам, если удалить/переименовать
+`Dockerfile`.
+
+### Если у вас уже есть свой сервер/VPS
+
+```bash
+git clone <ваш репозиторий>
+cd voice-assistant-bot
+cp .env.example .env  # заполните
+docker build -t voice-assistant .
+docker run -d --name voice-assistant \
+  --env-file .env \
+  -v $(pwd)/data:/app/data \
+  -e DB_PATH=/app/data/assistant.sqlite3 \
+  --restart unless-stopped \
+  voice-assistant
+```
+
+`--restart unless-stopped` — чтобы бот поднимался сам после перезагрузки сервера.
+
+## 4. Команды бота
+
+- `/start` — приветствие и подсказка
+- `/list` — список активных напоминаний с номерами
+- `/cancel <номер>` — отменить напоминание по номеру из `/list`
+- Любой текст или голосовое сообщение — обычный разговор с ассистентом, или
+  постановка напоминания, если Claude распознает в сообщении такое намерение.
+  Голосовое сначала распознаётся (Whisper), бот показывает, что расслышал, и
+  дальше обрабатывает как обычный текст.
+
+## 5. Настройки на вкус
+
+В `.env`:
+- `CLAUDE_MODEL` — по умолчанию `claude-sonnet-5` (баланс скорости/качества).
+  Для более дешёвых и быстрых ответов на простые вопросы можно поставить
+  `claude-haiku-4-5-20251001`.
+- `TTS_VOICE` — голос озвучки, по умолчанию `ru-RU-SvetlanaNeural` (женский).
+  Мужской вариант — `ru-RU-DmitryNeural`. Полный список голосов:
+  `edge-tts --list-voices | grep ru-RU` (после установки зависимостей).
+- `ALLOWED_USER_ID` — оставьте пустым, если хотите, чтобы бот отвечал всем, кто
+  ему напишет (не рекомендуется для личного ассистента с доступом к вашим
+  напоминаниям).
+- `OPENAI_API_KEY` / `STT_MODEL` / `STT_LANGUAGE` — распознавание голосовых
+  сообщений. `whisper-1` — самый стабильный и дешёвый вариант; можно попробовать
+  `gpt-4o-transcribe` для более высокого качества (дороже). Оставьте
+  `OPENAI_API_KEY` пустым, чтобы отключить голосовой ввод совсем.
+
+## 6. Структура проекта
+
+```
+bot/
+  config.py     — загрузка настроек из .env
+  assistant.py  — обращения к Claude (диалог + разбор намерения "напомни")
+  reminders.py  — хранение (SQLite) и планирование (APScheduler) напоминаний
+  stt.py        — распознавание голосовых сообщений (OpenAI Whisper)
+  tts.py        — синтез речи и конвертация в формат голосовых сообщений Telegram
+  main.py       — точка входа, обработчики сообщений aiogram
+Dockerfile       — образ для деплоя (Railway/Render/любой VPS)
+nixpacks.toml    — альтернатива Dockerfile для сборки на Railway
+requirements.txt
+.env.example
+```
+
+aiogram==3.15.0
+anthropic==0.40.0
+openai==1.57.0
+apscheduler==3.10.4
+edge-tts==6.1.19
+pydub==0.25.1
+python-dotenv==1.0.1
+aiosqlite==0.20.0
+tzdata==2024.2
