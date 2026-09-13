@@ -104,13 +104,15 @@ def build_dispatcher(config, assistant: Assistant, store: ReminderStore,
         chat_id = message.chat.id
 
         now = datetime.now(tz)
-        reminder_data = await assistant.parse_reminder(text, now, config.timezone)
-except Exception:
-logger.exception (""Ошибка при обращении к Claude (parse_reminder)") 
-await message.answer("Что-то пошло не так на моей стороне, попробуй ещё раз через минуту.")
-return
+        try:
+            reminder_data = await assistant.parse_reminder(text, now, config.timezone)
+        except Exception:
+            logger.exception("Ошибка при обращении к Claude (parse_reminder)")
+            await message.answer("Что-то пошло не так на моей стороне, попробуй ещё раз через минуту.")
+            return
+
         if reminder_data.get("is_reminder") and reminder_data.get("when_iso"):
-                    try:
+            try:
                 when_at = datetime.fromisoformat(reminder_data["when_iso"])
                 if when_at.tzinfo is None:
                     when_at = when_at.replace(tzinfo=tz)
