@@ -2,7 +2,9 @@
 import asyncio
 import logging
 import shutil
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
@@ -12,6 +14,7 @@ from aiogram.types import FSInputFile, Message
 from bot.assistant import Assistant
 from bot.config import load_config
 from bot.reminders import Reminder, ReminderScheduler, ReminderStore
+from bot.stt import SpeechToText
 from bot.tts import synthesize_voice
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -49,7 +52,7 @@ async def _send_reply(bot: Bot, chat_id: int, text: str, tts_voice: str) -> None
 
 
 def build_dispatcher(config, assistant: Assistant, store: ReminderStore,
-                      scheduler: ReminderScheduler) -> Dispatcher:
+                      scheduler: ReminderScheduler, stt: SpeechToText | None) -> Dispatcher:
     dp = Dispatcher()
     tz = ZoneInfo(config.timezone)
 
@@ -95,24 +98,10 @@ def build_dispatcher(config, assistant: Assistant, store: ReminderStore,
         else:
             await message.answer("Не нашёл такое напоминание среди активных.")
 
-    @dp.message(F.voice)
-    async def handle_voice(message: Message) -> None:
-        if not _is_allowed(config, message.from_user.id):
-            return
-        await message.answer(
-            "Пока умею понимать только текст — распознавание голосовых сообщений "
-            "в эту версию не добавлено. Продиктуй через клавиатуру голосовым вводом "
-            "телефона, я отвечу текстом и голосом."
-        )
-
-    @dp.message(F.text)
-    async def handle_text(message: Message) -> None:
-        if not _is_allowed(config, message.from_user.id):
-            await message.answer("Этот бот настроен как личный ассистент другого пользователя.")
-            return
-
+    async def _process_incoming_text(message: Message, text: str) -> None:
+        """Общая логика для текстовых и (после распознавания) голосовых сообщений:
+        понять, не просьба ли это поставить напоминание, иначе — обычный ответ Claude."""
         chat_id = message.chat.id
-        text = message.text
 
         now = datetime.now(tz)
         reminder_data = await assistant.parse_reminder(text, now, config.timezone)
@@ -147,6 +136,44 @@ def build_dispatcher(config, assistant: Assistant, store: ReminderStore,
         _push_history(chat_id, "assistant", reply_text)
         await _send_reply(message.bot, chat_id, reply_text, config.tts_voice)
 
+    @dp.message(F.voice)
+    async def handle_voice(message: Message) -> None:
+        if not _is_allowed(config, message.from_user.id):
+            return
+
+        if stt is None:
+            await message.answer(
+                "Распознавание голосовых сообщений не настроено (нет OPENAI_API_KEY) — "
+                "напиши текстом, я отвечу текстом и голосом."
+            )
+            return
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="voice_in_"))
+        ogg_path = tmp_dir / "voice.ogg"
+        try:
+            await message.bot.download(message.voice, destination=ogg_path)
+            recognized_text = await stt.transcribe(ogg_path)
+        except Exception:
+            logger.exception("Не удалось распознать голосовое сообщение")
+            await message.answer("Не получилось распознать голосовое, попробуй ещё раз или напиши текстом.")
+            return
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        if not recognized_text:
+            await message.answer("Не расслышала, что ты сказал(а) — попробуй ещё раз.")
+            return
+
+        await message.answer(f"Ты сказал(а): «{recognized_text}»")
+        await _process_incoming_text(message, recognized_text)
+
+    @dp.message(F.text)
+    async def handle_text(message: Message) -> None:
+        if not _is_allowed(config, message.from_user.id):
+            await message.answer("Этот бот настроен как личный ассистент другого пользователя.")
+            return
+        await _process_incoming_text(message, message.text)
+
     return dp
 
 
@@ -165,9 +192,15 @@ async def main() -> None:
     scheduler = ReminderScheduler(store, on_fire=lambda r: _on_reminder_fire(bot, config.tts_voice, r))
     await scheduler.start()
 
-    dp = build_dispatcher(config, assistant, store, scheduler)
+    stt = SpeechToText(config.openai_api_key, config.stt_model, config.stt_language) \
+        if config.openai_api_key else None
 
-    logger.info("Бот запущен, модель Claude: %s, голос: %s", config.claude_model, config.tts_voice)
+    dp = build_dispatcher(config, assistant, store, scheduler, stt)
+
+    logger.info(
+        "Бот запущен, модель Claude: %s, голос: %s, распознавание голоса: %s",
+        config.claude_model, config.tts_voice, "включено" if stt else "выключено (нет OPENAI_API_KEY)",
+    )
     await dp.start_polling(bot)
 
 

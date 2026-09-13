@@ -26,6 +26,9 @@ class Config:
     claude_model: str
     tts_voice: str
     db_path: str
+    openai_api_key: str | None
+    stt_model: str
+    stt_language: str
 
 
 def load_config() -> Config:
@@ -38,4 +41,9 @@ def load_config() -> Config:
         claude_model=os.getenv("CLAUDE_MODEL", "claude-sonnet-5"),
         tts_voice=os.getenv("TTS_VOICE", "ru-RU-SvetlanaNeural"),
         db_path=os.getenv("DB_PATH", "assistant.sqlite3"),
+        # Ключ для распознавания голосовых сообщений (OpenAI Whisper).
+        # Не задан — бот просто попросит написать текстом вместо голосового.
+        openai_api_key=os.getenv("OPENAI_API_KEY") or None,
+        stt_model=os.getenv("STT_MODEL", "whisper-1"),
+        stt_language=os.getenv("STT_LANGUAGE", "ru"),
     )
