@@ -1,0 +1,7 @@
+# Альтернатива Dockerfile для Railway, если вы предпочитаете сборку через Nixpacks
+# вместо Docker: Railway подхватит этот файл автоматически и поставит ffmpeg.
+[phases.setup]
+aptPkgs = ["ffmpeg"]
+
+[start]
+cmd = "python -m bot.main"
